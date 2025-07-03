@@ -229,13 +229,13 @@ def collate_fn(batch):
 
 # Create the datasets
 train_dirs = [
-    '/home/hawkeye/works/vit/data/train.X1',
-    '/home/hawkeye/works/vit/data/train.X2',
-    '/home/hawkeye/works/vit/data/train.X3',
-    '/home/hawkeye/works/vit/data/train.X4'
+    './data/train.X1',
+    './data/train.X2',
+    './data/train.X3',
+    './data/train.X4'
 ]
-val_dir = ['/home/hawkeye/works/vit/data/val.X']
-labels_file = '/home/hawkeye/works/vit/data/Labels.json'
+val_dir = ['./data/val.X']
+labels_file = './data/Labels.json'
 
 train_dataset = ImageNet100Dataset(
     root_dirs=train_dirs,

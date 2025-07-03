@@ -154,15 +154,7 @@ class ProgressMeter(object):
 
 
 
-model = SimpleVisionTransformer(
-    image_size=256,
-    patch_size=16,
-    num_layers=12,
-    num_heads=3,
-    hidden_dim=192,
-    mlp_dim=768,
-)
-# model = SSSVisionTransformer(
+# model = SimpleVisionTransformer(
 #     image_size=256,
 #     patch_size=16,
 #     num_layers=12,
@@ -170,6 +162,14 @@ model = SimpleVisionTransformer(
 #     hidden_dim=192,
 #     mlp_dim=768,
 # )
+model = SSSVisionTransformer(
+    image_size=256,
+    patch_size=16,
+    num_layers=12,
+    num_heads=3,
+    hidden_dim=192,
+    mlp_dim=768,
+)
 model = nn.DataParallel(model)
 model.to('cuda')
 
@@ -351,8 +351,6 @@ def train(train_loader, val_loader, start_step, total_steps, original_model, mod
                 'scheduler' : scheduler.state_dict()
             }, is_best, checkpoint_path)
             
-        if step % 27000 == 0 and step > 0:
-            break
 
         scheduler.step()
 
