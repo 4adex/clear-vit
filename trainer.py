@@ -1,5 +1,5 @@
 from dataloader import train_dataset, LabelSmoothing, train_loader, val_loader
-from models import SimpleVisionTransformer, SSSVisionTransformer
+from models import SimpleVisionTransformer, SSSVisionTransformer, RoPESimpleVisionTransformer
 import torch.nn as nn
 import torch.distributed as dist
 import torch
@@ -162,14 +162,26 @@ class ProgressMeter(object):
 #     hidden_dim=192,
 #     mlp_dim=768,
 # )
-model = SSSVisionTransformer(
+# model = SSSVisionTransformer(
+#     image_size=256,
+#     patch_size=16,
+#     num_layers=12,
+#     num_heads=3,
+#     hidden_dim=192,
+#     mlp_dim=768,
+# )
+
+model = RoPESimpleVisionTransformer(
     image_size=256,
     patch_size=16,
     num_layers=12,
     num_heads=3,
     hidden_dim=192,
     mlp_dim=768,
+    rope_theta=10.0,
+    use_traditional_pos_emb = True
 )
+
 model = nn.DataParallel(model)
 model.to('cuda')
 

@@ -1,5 +1,7 @@
 /data
 /checkpoints
+/SSS\ Attn\ checkpoints
+*.log
 __pycache__/
 *.py[cod]
 *$py.class
