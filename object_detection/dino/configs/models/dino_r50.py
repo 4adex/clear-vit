@@ -9,7 +9,7 @@ from detrex.modeling.matcher import HungarianMatcher
 from detrex.modeling.neck import ChannelMapper
 from detrex.layers import PositionEmbeddingSine
 
-from projects.dino.modeling import (
+from dino.modeling import (
     DINO,
     DINOTransformerEncoder,
     DINOTransformerDecoder,

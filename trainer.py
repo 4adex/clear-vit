@@ -154,14 +154,14 @@ class ProgressMeter(object):
 
 
 
-# model = SimpleVisionTransformer(
-#     image_size=256,
-#     patch_size=16,
-#     num_layers=12,
-#     num_heads=3,
-#     hidden_dim=192,
-#     mlp_dim=768,
-# )
+model = SimpleVisionTransformer(
+    image_size=256,
+    patch_size=16,
+    num_layers=12,
+    num_heads=3,
+    hidden_dim=192,
+    mlp_dim=768,
+)
 # model = SSSVisionTransformer(
 #     image_size=256,
 #     patch_size=16,
@@ -171,16 +171,16 @@ class ProgressMeter(object):
 #     mlp_dim=768,
 # )
 
-model = RoPESimpleVisionTransformer(
-    image_size=256,
-    patch_size=16,
-    num_layers=12,
-    num_heads=3,
-    hidden_dim=192,
-    mlp_dim=768,
-    rope_theta=10.0,
-    use_traditional_pos_emb = True
-)
+# model = RoPESimpleVisionTransformer(
+#     image_size=256,
+#     patch_size=16,
+#     num_layers=12,
+#     num_heads=3,
+#     hidden_dim=192,
+#     mlp_dim=768,
+#     rope_theta=10.0,
+#     use_traditional_pos_emb = True
+# )
 
 model = nn.DataParallel(model)
 model.to('cuda')

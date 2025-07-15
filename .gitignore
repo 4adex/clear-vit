@@ -7,3 +7,8 @@ __pycache__/
 *$py.class
 /myenv
 /logs
+/object_detection/detrexx
+/object_detection/detrex
+/object_detection/dino/datasets
+/object_detection/output
+/.vscode

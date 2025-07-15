@@ -19,6 +19,9 @@ import time
 import torch
 from torch.nn.parallel import DataParallel, DistributedDataParallel
 
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+# print("PYTHONPATH:", sys.path)
+
 from detectron2.checkpoint import DetectionCheckpointer
 from detectron2.config import LazyConfig, instantiate
 from detectron2.engine import (
