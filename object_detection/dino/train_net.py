@@ -18,6 +18,7 @@ import sys
 import time
 import torch
 from torch.nn.parallel import DataParallel, DistributedDataParallel
+import warnings
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 # print("PYTHONPATH:", sys.path)
@@ -39,6 +40,8 @@ from detectron2.utils import comm
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), os.path.pardir)))
 
 logger = logging.getLogger("detrex")
+
+warnings.filterwarnings("ignore")
 
 
 def match_name_keywords(n, name_keywords):
