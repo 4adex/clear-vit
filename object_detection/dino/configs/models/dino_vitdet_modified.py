@@ -10,12 +10,9 @@ from detectron2.modeling.backbone.fpn import LastLevelMaxPool
 from .dino_r50 import model  # reuse common structure
 from .custom_vit import CustomViT
 
-# Custom SimpleViT backbone
-# from detectron2.modeling import CustomViT
-
 # ViT Params
 # ViT Base Hyper-params
-embed_dim, depth, num_heads, dp = 768, 12, 12, 0.1
+embed_dim, depth, num_heads, dp = 768, 8, 6, 0.1
 
 # Creates Simple Feature Pyramid from Custom ViT backbone
 model.backbone = L(SimpleFeaturePyramid)(
