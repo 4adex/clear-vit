@@ -57,7 +57,7 @@ optimizer.params.lr_factor_func = lambda module_name: 0.1 if "backbone" in modul
 # modify dataloader config
 dataloader.train.num_workers = 8
 
-dataloader.train.total_batch_size = 1
+dataloader.train.total_batch_size = 2
 
 dataloader.train.dataset.names = ["a-train"]
 dataloader.test.dataset.names = ["a-val"]
