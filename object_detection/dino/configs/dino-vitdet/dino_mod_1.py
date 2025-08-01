@@ -1,5 +1,6 @@
 from detrex.config import get_config
-from ..models.dino_vitdet import model
+from ..models.dino_vitdet_modified import model
+from detectron2.data.datasets import register_coco_instances
 
 # get default config
 dataloader = get_config("common/data/coco_detr.py").dataloader
@@ -8,9 +9,23 @@ lr_multiplier = get_config("common/coco_schedule.py").lr_multiplier_12ep
 train = get_config("common/train.py").train
 
 
+register_coco_instances(
+    "a-train",
+    {},
+    "/kaggle/input/coco2017/annotations/instances_train2017.json",
+    "/kaggle/input/coco2017/train2017"
+)
+
+register_coco_instances(
+    "a-val",
+    {},
+    "/kaggle/input/coco2017/annotations/instances_val2017.json",
+    "/kaggle/input/coco2017/val2017"
+)
+
 # modify training config
-train.init_checkpoint = "detectron2://ImageNetPretrained/MAE/mae_pretrain_vit_base.pth"
-train.output_dir = "./output/dino_vitdet_base_12ep"
+train.init_checkpoint = ""
+train.output_dir = "./output/aabb"
 
 # max training iterations
 train.max_iter = 90000
@@ -32,7 +47,6 @@ train.clip_grad.params.norm_type = 2
 # set training devices
 train.device = "cuda"
 model.device = train.device
-# train.amp.enabled = True
 
 # modify optimizer config
 optimizer.lr = 1e-4
@@ -43,15 +57,10 @@ optimizer.params.lr_factor_func = lambda module_name: 0.1 if "backbone" in modul
 # modify dataloader config
 dataloader.train.num_workers = 16
 
-# please notice that this is total batch size.
-# surpose you're using 4 gpus for training and the batch size for
-# each gpu is 16/4 = 4
 dataloader.train.total_batch_size = 1
 
-dataloader.train.dataset.names = ["coco_my_train"]
-dataloader.test.dataset.names = ["coco_my_val"]
-
-model.model.roi_heads.num_classes = 80
+dataloader.train.dataset.names = ["a-train"]
+dataloader.test.dataset.names = ["a-val"]
 
 # dump the testing results into output_dir for visualization
 dataloader.evaluator.output_dir = train.output_dir

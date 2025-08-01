@@ -11,4 +11,5 @@ __pycache__/
 /object_detection/detrex
 /object_detection/dino/datasets
 /object_detection/output
+object_detection/dino/output/
 /.vscode

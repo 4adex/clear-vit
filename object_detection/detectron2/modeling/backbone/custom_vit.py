@@ -7,338 +7,264 @@ import math
 
 from detectron2.layers import ShapeSpec
 from .backbone import Backbone
+import torch.nn.functional as F
 
-class MLPBlock(nn.Module):
-    def __init__(self, in_dim, mlp_dim, dropout):
+class PatchEmbed(nn.Module):
+    """2D Image to Patch Embedding with support for different output features"""
+    def __init__(self, img_size=224, patch_size=16, in_chans=3, embed_dim=768):
         super().__init__()
-        self.linear_1 = nn.Linear(in_dim, mlp_dim)
-        self.activation = nn.GELU()
-        self.dropout_1 = nn.Dropout(dropout)
-        self.linear_2 = nn.Linear(mlp_dim, in_dim)
-        self.dropout_2 = nn.Dropout(dropout)
+        self.img_size = img_size
+        self.patch_size = patch_size
+        self.grid_size = img_size // patch_size
+        self.num_patches = self.grid_size * self.grid_size
+
+        self.proj = nn.Conv2d(in_chans, embed_dim, kernel_size=patch_size, stride=patch_size)
 
     def forward(self, x):
-        x = self.linear_1(x)
-        x = self.activation(x)
-        x = self.dropout_1(x)
-        x = self.linear_2(x)
-        x = self.dropout_2(x)
+        B, C, H, W = x.shape
+        x = self.proj(x)  # (B, embed_dim, H//patch_size, W//patch_size)
+        x = x.flatten(2).transpose(1, 2)  # (B, num_patches, embed_dim)
         return x
 
-
-
-class EncoderBlock(nn.Module):
-    """Transformer encoder block."""
-
-    def __init__(
-        self,
-        num_heads: int,
-        hidden_dim: int,
-        mlp_dim: int,
-        dropout: float,
-        attention_dropout: float,
-        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
-    ):
+class MultiheadSelfAttention(nn.Module):
+    def __init__(self, embed_dim, num_heads, dropout=0.0):
         super().__init__()
+        assert embed_dim % num_heads == 0
+
+        self.embed_dim = embed_dim
         self.num_heads = num_heads
+        self.head_dim = embed_dim // num_heads
+        self.scale = self.head_dim ** -0.5
 
-        # Attention block
-        self.ln_1 = norm_layer(hidden_dim)
-        
-        # Here using 
-        self.self_attention = nn.MultiheadAttention(hidden_dim, num_heads, dropout=attention_dropout, batch_first=True)
+        self.qkv = nn.Linear(embed_dim, embed_dim * 3)
+        self.proj = nn.Linear(embed_dim, embed_dim)
         self.dropout = nn.Dropout(dropout)
 
-        # MLP block
-        self.ln_2 = norm_layer(hidden_dim)
-        self.mlp = MLPBlock(hidden_dim, mlp_dim, dropout)
+    def forward(self, x):
+        B, N, C = x.shape
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)
 
-        # Fix init discrepancy between nn.MultiheadAttention and that of big_vision
-        bound = math.sqrt(3 / hidden_dim)
-        nn.init.uniform_(self.self_attention.in_proj_weight, -bound, bound)
-        nn.init.uniform_(self.self_attention.out_proj.weight, -bound, bound)
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.dropout(attn)
 
-    def forward(self, input: torch.Tensor):
-        torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
-        x = self.ln_1(input)
-        x, _ = self.self_attention(x, x, x, need_weights=False)
-        x = self.dropout(x)
-        x = x + input
+        x = (attn @ v).transpose(1, 2).reshape(B, N, C)
+        x = self.proj(x)
+        return x
 
-        y = self.ln_2(x)
-        y = self.mlp(y)
-        return x + y
-    
-class Encoder(nn.Module):
-    """Transformer Model Encoder for sequence to sequence translation."""
-
-    def __init__(
-        self,
-        num_layers: int,
-        num_heads: int,
-        hidden_dim: int,
-        mlp_dim: int,
-        dropout: float,
-        attention_dropout: float,
-        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
-    ):
+class Mlp(nn.Module):
+    def __init__(self, in_features, hidden_features=None, out_features=None,
+                 act_layer=nn.GELU, drop=0.):
         super().__init__()
-        self.dropout = nn.Dropout(dropout)
-        layers: OrderedDict[str, nn.Module] = OrderedDict()
-        for i in range(num_layers):
-            layers[f"encoder_layer_{i}"] = EncoderBlock(
-                num_heads,
-                hidden_dim,
-                mlp_dim,
-                dropout,
-                attention_dropout,
-                norm_layer,
-            )
-        self.layers = nn.Sequential(layers)
-        self.ln = norm_layer(hidden_dim)
+        out_features = out_features or in_features
+        hidden_features = hidden_features or in_features
 
-    def forward(self, input: torch.Tensor):
-        torch._assert(input.dim() == 3, f"Expected (batch_size, seq_length, hidden_dim) got {input.shape}")
-        return self.ln(self.layers(self.dropout(input)))
+        self.fc1 = nn.Linear(in_features, hidden_features)
+        self.act = act_layer()
+        self.fc2 = nn.Linear(hidden_features, out_features)
+        self.drop = nn.Dropout(drop)
 
+    def forward(self, x):
+        x = self.fc1(x)
+        x = self.act(x)
+        x = self.drop(x)
+        x = self.fc2(x)
+        x = self.drop(x)
+        return x
 
-def jax_lecun_normal(layer, fan_in):
-    """(re-)initializes layer weight in the same way as jax.nn.initializers.lecun_normal and bias to zero"""
+def drop_path(x, drop_prob: float = 0., training: bool = False):
+    if drop_prob == 0. or not training:
+        return x
+    keep_prob = 1 - drop_prob
+    shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+    random_tensor = keep_prob + torch.rand(shape, dtype=x.dtype, device=x.device)
+    random_tensor.floor_()
+    output = x.div(keep_prob) * random_tensor
+    return output
 
-    # constant is stddev of standard normal truncated to (-2, 2)
-    std = math.sqrt(1 / fan_in) / .87962566103423978
-    nn.init.trunc_normal_(layer.weight, std=std, a=-2 * std, b=2 * std)
-    if layer.bias is not None:
-        nn.init.zeros_(layer.bias)
-
-class SimpleVisionTransformer(nn.Module):
-    """Vision Transformer modified per https://arxiv.org/abs/2205.01580."""
-    def __init__(
-        self,
-        image_size: int,
-        patch_size: int,
-        num_layers: int,
-        num_heads: int,
-        hidden_dim: int,
-        mlp_dim: int,
-        dropout: float = 0.0,
-        attention_dropout: float = 0.0,
-        num_classes: int = 100,
-        representation_size: Optional[int] = None,
-        norm_layer: Callable[..., torch.nn.Module] = partial(nn.LayerNorm, eps=1e-6),
-    ):
+class DropPath(nn.Module):
+    def __init__(self, drop_prob=None):
         super().__init__()
-        torch._assert(image_size % patch_size == 0, "Input shape indivisible by patch size!")
-        self.image_size = image_size
+        self.drop_prob = drop_prob
+
+    def forward(self, x):
+        return drop_path(x, self.drop_prob, self.training)
+
+class Block(nn.Module):
+    def __init__(self, dim, num_heads, mlp_ratio=4., qkv_bias=False,
+                 drop=0., attn_drop=0., drop_path=0., act_layer=nn.GELU,
+                 norm_layer=nn.LayerNorm, window_size=0):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.attn = MultiheadSelfAttention(dim, num_heads, dropout=attn_drop)
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        self.norm2 = norm_layer(dim)
+        mlp_hidden_dim = int(dim * mlp_ratio)
+        self.mlp = Mlp(in_features=dim, hidden_features=mlp_hidden_dim,
+                       act_layer=act_layer, drop=drop)
+
+    def forward(self, x):
+        x = x + self.drop_path(self.attn(self.norm1(x)))
+        x = x + self.drop_path(self.mlp(self.norm2(x)))
+        return x
+
+class CustomViT(Backbone):
+    """Custom Vision Transformer compatible with DETR-X framework"""
+
+    def __init__(self,
+                 img_size=768,
+                 patch_size=16,
+                 in_chans=3,
+                 embed_dim=768,
+                 depth=12,
+                 num_heads=12,
+                 mlp_ratio=4.,
+                 qkv_bias=True,
+                 drop_rate=0.,
+                 attn_drop_rate=0.,
+                 drop_path_rate=0.,
+                 norm_layer=None,
+                 use_abs_pos=True,
+                 use_rel_pos=False,  # Note: not used in this class
+                 window_size=14,
+                 window_block_indexes=(),
+                 residual_block_indexes=(),
+                 out_feature="last_feat"):
+        super().__init__()
+
+        norm_layer = norm_layer or partial(nn.LayerNorm, eps=1e-6)
+
+        self.img_size = img_size
         self.patch_size = patch_size
-        self.hidden_dim = hidden_dim
-        self.mlp_dim = mlp_dim
-        self.attention_dropout = attention_dropout
-        self.dropout = dropout
-        self.num_classes = num_classes
-        self.representation_size = representation_size
-        self.norm_layer = norm_layer
-
-        self.conv_proj = nn.Conv2d(
-            in_channels=3, out_channels=hidden_dim, kernel_size=patch_size, stride=patch_size
-        )
-        
-        h = w = image_size // patch_size 
-
-        seq_length = (image_size // patch_size) ** 2
-        self.pos_embedding = nn.Parameter(torch.randn(1, seq_length, hidden_dim) * 0.02, requires_grad=True)
-        self.cls_token = nn.Parameter(torch.randn(1, 1, hidden_dim) * 0.02, requires_grad=True)
-
-        self.encoder = Encoder(
-            num_layers,
-            num_heads,
-            hidden_dim,
-            mlp_dim,
-            dropout,
-            attention_dropout,
-            norm_layer,
-        )
-        
-        self.seq_length = seq_length
-
-        heads_layers: OrderedDict[str, nn.Module] = OrderedDict()
-        if representation_size is None:
-            heads_layers["head"] = nn.Linear(hidden_dim, num_classes)
-        else:
-            heads_layers["pre_logits"] = nn.Linear(hidden_dim, representation_size)
-            heads_layers["act"] = nn.Tanh()
-            heads_layers["head"] = nn.Linear(representation_size, num_classes)
-
-        self.heads = nn.Sequential(heads_layers)
-        
-        # Init the patchify stem
-        fan_in = self.conv_proj.in_channels * self.conv_proj.kernel_size[0] * self.conv_proj.kernel_size[1] // self.conv_proj.groups
-        jax_lecun_normal(self.conv_proj, fan_in)
-
-        if hasattr(self.heads, "pre_logits") and isinstance(self.heads.pre_logits, nn.Linear):
-            fan_in = self.heads.pre_logits.in_features
-            jax_lecun_normal(self.heads.pre_logits, fan_in)
-
-        if isinstance(self.heads.head, nn.Linear):
-            nn.init.zeros_(self.heads.head.weight)
-            nn.init.zeros_(self.heads.head.bias)
-
-    def _process_input(self, x: torch.Tensor) -> torch.Tensor:
-        n, c, h, w = x.shape
-        p = self.patch_size
-        torch._assert(h == self.image_size, f"Wrong image height! Expected {self.image_size} but got {h}!")
-        torch._assert(w == self.image_size, f"Wrong image width! Expected {self.image_size} but got {w}!")
-        n_h = h // p
-        n_w = w // p
-
-        # (n, c, h, w) -> (n, hidden_dim, n_h, n_w)
-        x = self.conv_proj(x)
-        # (n, hidden_dim, n_h, n_w) -> (n, hidden_dim, (n_h * n_w))
-        x = x.reshape(n, self.hidden_dim, n_h * n_w)
-
-        # (n, hidden_dim, (n_h * n_w)) -> (n, (n_h * n_w), hidden_dim)
-        # The self attention layer expects inputs in the format (N, S, E)
-        # where S is the source sequence length, N is the batch size, E is the
-        # embedding dimension
-        x = x.permute(0, 2, 1)
-
-        return x
-    
-    def forward(self, x: torch.Tensor):
-        # Reshape and permute the input tensor
-        x = self._process_input(x)
-        n = x.shape[0]
-
-        x = x + self.pos_embedding
-
-        cls_token = self.cls_token.expand(n, -1, -1)
-        x = torch.cat([cls_token, x], dim=1)
-
-        x = self.encoder(x)
-
-        # Use only the CLS token for classification
-        x = x[:, 0]
-
-        x = self.heads(x)
-
-        return x
-
-
-
-class SimpleViT(Backbone):
-    def __init__(
-        self,
-        img_size=1024,
-        patch_size=16,
-        in_chans=3,
-        embed_dim=768,
-        depth=12,
-        num_heads=12,
-        mlp_ratio=4.0,
-        dropout=0.0,
-        attention_dropout=0.0,
-        use_abs_pos=True,
-        use_cls_token=False,
-        out_feature="last_feat",
-    ):
-        """
-        Args:
-            img_size (int): Input image size.
-            patch_size (int): Patch size for ViT.
-            in_chans (int): Number of input channels (usually 3 for RGB).
-            embed_dim (int): Hidden dimension.
-            depth (int): Number of encoder blocks.
-            num_heads (int): Number of self-attention heads.
-            mlp_ratio (float): MLP hidden dim as a ratio of embed_dim.
-            dropout (float): Dropout rate.
-            attention_dropout (float): Attention dropout rate.
-            use_abs_pos (bool): Use absolute positional encoding.
-            use_cls_token (bool): If True, prepend class token.
-            out_feature (str): Output feature name.
-        """
-        super().__init__()
-        self.use_cls_token = use_cls_token
+        self.embed_dim = embed_dim
         self.out_feature = out_feature
 
-        self.vit = SimpleVisionTransformer(
-            image_size=img_size,
-            patch_size=patch_size,
-            num_layers=depth,
-            num_heads=num_heads,
-            hidden_dim=embed_dim,
-            mlp_dim=int(embed_dim * mlp_ratio),
-            dropout=dropout,
-            attention_dropout=attention_dropout,
-            num_classes=0,  # classification head is disabled
-            representation_size=None,
-        )
+        # Patch embedding
+        self.patch_embed = PatchEmbed(img_size, patch_size, in_chans, embed_dim)
+        num_patches = self.patch_embed.num_patches
 
-        self._out_feature_channels = {out_feature: embed_dim}
-        self._out_feature_strides = {out_feature: patch_size}
-        self._out_features = [out_feature]
-
-    def forward(self, x: torch.Tensor) -> Dict[str, torch.Tensor]:
-        n, c, h, w = x.shape
-        patch_size = self.vit.patch_size
-
-        print(f"Input shape: {(h, w)}, Patch size: {patch_size}")
-        
-        # Remove strict assertion - handle variable sizes like standard ViT
-        # assert h % patch_size == 0 and w % patch_size == 0, "Image size must be divisible by patch size"
-
-        x = self.vit._process_input(x)
-        
-        # Handle positional embedding for variable input sizes
-        current_seq_len = x.shape[1]  # Number of patches
-        if current_seq_len != self.vit.pos_embedding.shape[1]:
-            # Interpolate positional embedding to match current sequence length
-            pos_embed = self._interpolate_pos_embed(
-                self.vit.pos_embedding, 
-                current_seq_len
-            )
+        # Class token and position embedding
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        if use_abs_pos:
+            self.pos_embed = nn.Parameter(torch.zeros(1, num_patches + 1, embed_dim))
         else:
-            pos_embed = self.vit.pos_embedding
-            
-        x = x + pos_embed
-        
-        if self.use_cls_token:
-            cls_token = self.vit.cls_token.expand(n, -1, -1)
-            x = torch.cat([cls_token, x], dim=1)
-            x = self.vit.encoder(x)
-            x = x[:, 1:]  # drop CLS token
-        else:
-            x = self.vit.encoder(x)
+            self.pos_embed = None
 
-        # Convert back to feature map shape (N, C, H', W')
-        h_patches = h // patch_size
-        w_patches = w // patch_size
-        x = x.transpose(1, 2).reshape(n, self.vit.hidden_dim, h_patches, w_patches)
+        self.pos_drop = nn.Dropout(p=drop_rate)
 
-        return {self.out_feature: x}
+        # Stochastic depth decay rule
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]
 
-    def _interpolate_pos_embed(self, pos_embed, target_seq_len):
-        """Interpolate positional embeddings for variable input sizes."""
-        import torch.nn.functional as F
-        
-        # Assuming square patches
-        old_seq_len = pos_embed.shape[1]
-        old_size = int(math.sqrt(old_seq_len))
-        new_size = int(math.sqrt(target_seq_len))
-        
-        if old_size != new_size:
-            pos_embed = pos_embed.reshape(1, old_size, old_size, -1).permute(0, 3, 1, 2)
-            pos_embed = F.interpolate(
-                pos_embed, size=(new_size, new_size), mode='bicubic', align_corners=False
+        # Build transformer blocks
+        self.blocks = nn.ModuleList([
+            Block(
+                dim=embed_dim,
+                num_heads=num_heads,
+                mlp_ratio=mlp_ratio,
+                qkv_bias=qkv_bias,
+                drop=drop_rate,
+                attn_drop=attn_drop_rate,
+                drop_path=dpr[i],
+                norm_layer=norm_layer,
+                window_size=window_size if i in window_block_indexes else 0,
             )
-            pos_embed = pos_embed.permute(0, 2, 3, 1).reshape(1, target_seq_len, -1)
-        
-        return pos_embed
+            for i in range(depth)
+        ])
+
+        self.norm = norm_layer(embed_dim)
+
+        # Initialize weights
+        if self.pos_embed is not None:
+            nn.init.trunc_normal_(self.pos_embed, std=0.02)
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            nn.init.trunc_normal_(m.weight, std=0.02)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+
+    def forward(self, x):
+        B, C, H, W = x.shape
+
+        # Patch embedding
+        x = self.patch_embed(x)  # (B, num_patches, embed_dim)
+
+        # Add class token
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        x = torch.cat((cls_tokens, x), dim=1)  # (B, num_patches + 1, embed_dim)
+
+        # Add position embedding with interpolation for variable input sizes
+        if self.pos_embed is not None:
+            if x.shape[1] == self.pos_embed.shape[1]:
+                x = x + self.pos_embed
+            else:
+                cls_pos_embed = self.pos_embed[:, :1, :]  # (1,1,C)
+                patch_pos_embed = self.pos_embed[:, 1:, :]  # (1, num_orig_patches, C)
+
+                # Original grid size of position embeddings
+                orig_num_patches = patch_pos_embed.shape[1]
+                orig_size = int(math.sqrt(orig_num_patches))
+
+                # Calculate new patch grid size from actual image size
+                H_patch = H // self.patch_size
+                W_patch = W // self.patch_size
+
+                patch_pos_embed = patch_pos_embed.reshape(1, orig_size, orig_size, -1).permute(0, 3, 1, 2)
+                patch_pos_embed = F.interpolate(
+                    patch_pos_embed, size=(H_patch, W_patch), mode='bicubic', align_corners=False
+                )
+                patch_pos_embed = patch_pos_embed.permute(0, 2, 3, 1).reshape(1, H_patch * W_patch, -1)
+
+                # Trim or pad if needed
+                new_num_patches = H_patch * W_patch
+                if patch_pos_embed.shape[1] != new_num_patches:
+                    if patch_pos_embed.shape[1] > new_num_patches:
+                        patch_pos_embed = patch_pos_embed[:, :new_num_patches, :]
+                    else:
+                        pad_len = new_num_patches - patch_pos_embed.shape[1]
+                        pad = torch.zeros(1, pad_len, patch_pos_embed.shape[2], device=patch_pos_embed.device)
+                        patch_pos_embed = torch.cat([patch_pos_embed, pad], dim=1)
+
+                new_pos_embed = torch.cat((cls_pos_embed, patch_pos_embed), dim=1)
+                x = x + new_pos_embed
+
+        x = self.pos_drop(x)
+
+        # Transformer blocks
+        for blk in self.blocks:
+            x = blk(x)
+
+        x = self.norm(x)
+
+        # Remove cls token and reshape to (B, C, H_patch, W_patch)
+        x_spatial = x[:, 1:]
+        H_patch = H // self.patch_size
+        W_patch = W // self.patch_size
+        x_spatial = x_spatial.reshape(B, H_patch, W_patch, self.embed_dim)
+        x_spatial = x_spatial.permute(0, 3, 1, 2).contiguous()
+
+        # Return dict with output feature map, compatible with Detectron2 backbone API
+        return {self.out_feature: x_spatial}
+
+    @property
+    def size_divisibility(self) -> int:
+        # Enforce input sizes divisible by patch size
+        return self.patch_size
 
     def output_shape(self):
+        grid_size_h = self.img_size // self.patch_size
+        grid_size_w = self.img_size // self.patch_size
         return {
-            name: ShapeSpec(
-                channels=self._out_feature_channels[name],
-                stride=self._out_feature_strides[name]
+            self.out_feature: ShapeSpec(
+                channels=self.embed_dim,
+                height=grid_size_h,
+                width=grid_size_w,
+                stride=self.patch_size,
             )
-            for name in self._out_features
         }

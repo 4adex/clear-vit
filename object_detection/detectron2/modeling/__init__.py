@@ -12,7 +12,7 @@ from .backbone import (
     build_resnet_backbone,
     make_stage,
     ViT,
-    SimpleViT,
+    CustomViT,
     SimpleFeaturePyramid,
     get_vit_lr_decay_rate,
     MViT,
