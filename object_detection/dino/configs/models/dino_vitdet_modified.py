@@ -8,9 +8,10 @@ from detectron2.modeling import SimpleFeaturePyramid
 from detectron2.modeling.backbone.fpn import LastLevelMaxPool
 
 from .dino_r50 import model  # reuse common structure
+from .custom_vit import CustomViT
 
 # Custom SimpleViT backbone
-from detectron2.modeling import CustomViT
+# from detectron2.modeling import CustomViT
 
 # ViT Params
 # ViT Base Hyper-params
