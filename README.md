@@ -117,9 +117,9 @@ The best-performing configuration.
 
 Combines:
 
-  Absolute Positional Encoding (APE) for global positioning
+  -Absolute Positional Encoding (APE) for global positioning
 
-  Modified RoPE for fine-grained relative geometric cues
+  -Modified RoPE for fine-grained relative geometric cues
 
 Balances global + local spatial understanding → highest overall accuracy.
 
@@ -144,4 +144,5 @@ Object Detection (ViT backbone)
 Semantic Segmentation (ViT encoder with segmentation head)
 
 Results and implementations will be added soon.
+
 
